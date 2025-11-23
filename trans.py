@@ -1,3 +1,20 @@
+# This Python 3 environment comes with many helpful analytics libraries installed
+# It is defined by the kaggle/python Docker image: https://github.com/kaggle/docker-python
+# For example, here's several helpful packages to load
+
+# Input data files are available in the read-only "../input/" directory
+# For example, running this (by clicking run or pressing Shift+Enter) will list all files under the input directory
+
+import os
+for dirname, _, filenames in os.walk('/kaggle/input'):
+    for filename in filenames:
+        print(os.path.join(dirname, filename))
+
+# You can write up to 20GB to the current directory (/kaggle/working/) that gets preserved as output when you create a version using "Save & Run All" 
+# You can also write temporary files to /kaggle/temp/, but they won't be saved outside of the current session
+
+
+
 #transformer architecture
 import torch
 import torch.nn as nn
@@ -16,7 +33,7 @@ num_layers = 6
 dim_ff = 512
 dropout = 0.1
 pad_index = 0
-EPOCHS = 20
+EPOCHS = 2
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 32
 
@@ -230,15 +247,24 @@ def build_vocab(df):
 def prepare_data(df, token_to_idx):
     all_src = []
     all_tgt = []
+    start_token_idx = token_to_idx['<PATH_START>'] # Get Start Token ID
+    
     for idx in range(len(df)):
         row = df.iloc[idx]
         input_seq = ast.literal_eval(row['input_sequence'])
         output_seq = ast.literal_eval(row['output_path'])
-        src_indices = [token_to_idx.get(t, 0) for t in input_seq] # safe get
-        tgt_indices = [token_to_idx.get(t, 0) for t in output_seq]
+        
+        src_indices = [token_to_idx.get(t, 0) for t in input_seq]
+        
+        # FIX: Prepend <PATH_START> to the target sequence
+        # This aligns with the logic: Decoder Input = <PATH_START> + Path
+        tgt_indices = [start_token_idx] + [token_to_idx.get(t, 0) for t in output_seq]
+        
         all_src.append(torch.tensor(src_indices))
         all_tgt.append(torch.tensor(tgt_indices))
+        
     return all_src, all_tgt
+
 
 def create_batches(src_list, tgt_list, batch_size):
     num_samples = len(src_list)
@@ -390,40 +416,66 @@ def plot_metrics(history):
     plt.tight_layout()
     plt.savefig('transformer_metrics.png')
     plt.show()
-
+    
 def visualize_predictions(model, src_list, tgt_list, idx_to_token, token_to_idx, device, num_samples=5):
     model.eval()
     indices = np.random.choice(len(src_list), min(num_samples, len(src_list)), replace=False)
     
     start_token = token_to_idx['<PATH_START>']
     end_token = token_to_idx['<PATH_END>']
+    pad_token = token_to_idx['<PAD>']
+    
+    # Set of special tokens to ignore in final metrics/output
+    special_tokens = {start_token, end_token, pad_token, 0} 
     
     print("\n=== Visualizing Predictions ===")
     for idx in indices:
         src = src_list[idx].unsqueeze(0).to(device)
-        tgt = tgt_list[idx]
+        tgt = tgt_list[idx] # Contains <PATH_START> ... path ... <PATH_END>
         
         with torch.no_grad():
             pred_seq = model.predict(src, max_len=100, start_token=start_token, end_token=end_token)
         
-        src_tokens = [idx_to_token[i.item()] for i in src_list[idx] if i.item() != 0]
-        tgt_tokens = [idx_to_token[i.item()] for i in tgt if i.item() != 0]
-        pred_tokens = [idx_to_token[i.item()] for i in pred_seq[0] if i.item() != 0]
+        # 1. Convert to tokens for Metrics (Clean, no special tokens)
+        # Note: We don't filter src_tokens yet because we need structure tags like <ADJLIST> for plotting
+        # We only filter start/end/pad from src for plotting cleanliness if desired, but structure tags must remain.
         
-        f1 = compute_f1_score(pred_tokens, tgt_tokens)
-        exact_match = (pred_tokens == tgt_tokens)
+        tgt_tokens_clean = [idx_to_token[i.item()] for i in tgt if i.item() not in special_tokens]
+        pred_tokens_clean = [idx_to_token[i.item()] for i in pred_seq[0] if i.item() not in special_tokens]
+        
+        # 2. Calculate Metrics
+        f1 = compute_f1_score(pred_tokens_clean, tgt_tokens_clean)
+        exact_match = (pred_tokens_clean == tgt_tokens_clean)
         
         print(f"\nSample {idx}:")
-        print(f"Ground Truth: {' '.join(tgt_tokens)}")
-        print(f"Predicted:    {' '.join(pred_tokens)}")
+        print(f"Ground Truth: {' '.join(tgt_tokens_clean)}")
+        print(f"Predicted:    {' '.join(pred_tokens_clean)}")
         print(f"Exact Match: {exact_match} | F1 Score: {f1:.4f}")
 
-        plot_maze(src_tokens + pred_tokens, title=f"Prediction Sample {idx}")
+        # 3. Prepare Tokens for Visualization (Must include Tags)
+        # We take the raw source tokens (including ADJLIST tags)
+        # We assume src_list does NOT contain <PATH_START> (it was usually input up to that point)
+        # But we explicitly add <PATH_START> and <PATH_END> around the predicted path for the parser
+        
+        raw_src_tokens = [idx_to_token[i.item()] for i in src_list[idx] if i.item() != pad_token]
+        
+        # Construct full sequence: SRC + <PATH_START> + PREDICTED_PATH + <PATH_END>
+        # We use pred_tokens_clean to ensure we don't duplicate tags if predict() generated them
+        viz_tokens = raw_src_tokens + ['<PATH_START>'] + pred_tokens_clean + ['<PATH_END>']
+        
+        plot_maze(viz_tokens, title=f"Prediction Sample {idx} (Exact Match: {exact_match})")
 
 if __name__ == "__main__":
     
-    train_full_df = pd.read_csv('train_6x6_mazes.csv')
-    test_df = pd.read_csv('test_6x6_mazes.csv')
+    # train_full_df = pd.read_csv('train_6x6_mazes.csv')
+    # test_df = pd.read_csv('test_6x6_mazes.csv')
+
+    
+    DATA_PATH = '/kaggle/input/maze-data/' # Change 'maze-data' to your actual dataset name
+    
+    train_full_df = pd.read_csv(os.path.join(DATA_PATH, 'train_6x6_mazes.csv'))
+    test_df = pd.read_csv(os.path.join(DATA_PATH, 'test_6x6_mazes.csv'))
+
     
     train_df, val_df = train_test_split(train_full_df, test_size=0.1, random_state=42)
 
