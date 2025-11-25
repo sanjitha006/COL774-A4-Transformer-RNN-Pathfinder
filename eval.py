@@ -155,18 +155,19 @@ def main():
     print(f"Using device: {device}")
     
     # Initialize vocabulary
-    vocab = rnn.Vocab()
-    print(f"Vocabulary size: {vocab.num_tokens}")
+    if(model_type=='rnn'):
+        vocab = rnn.Vocab()
+        print(f"Vocabulary size: {vocab.num_tokens}")
+        
+        # Load model
+        print(f"Loading {model_type.upper()} model from {model_path}...")
+        model = load_model(model_path, vocab.num_tokens, device, model_type.lower())
+        print("Model loaded successfully!")
+        
+        # Generate predictions
+        generate_predictions(model, input_csv, output_csv, vocab, device)
+        print("Done!")
     
-    # Load model
-    print(f"Loading {model_type.upper()} model from {model_path}...")
-    model = load_model(model_path, vocab.num_tokens, device, model_type.lower())
-    print("Model loaded successfully!")
-    
-    # Generate predictions
-    generate_predictions(model, input_csv, output_csv, vocab, device)
-    print("Done!")
-
 
 if __name__ == '__main__':
     main()
